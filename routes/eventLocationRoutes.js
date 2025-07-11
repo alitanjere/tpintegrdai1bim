@@ -4,37 +4,22 @@ const db = require('../config/db');
 const { protect } = require('../middleware/authMiddleware');
 const { body, validationResult, query } = require('express-validator');
 
-// --- Helper function to get event location with its full location details ---
 const getEventLocationDetails = async (locationId, userId) => {
-    // The userId parameter is to ensure, if needed, that the query is restricted by user.
-    // For a general fetch by ID (e.g., when listing events), userId might not be strictly applied here
-    // but rather at the higher level (e.g., can user X see event Y which uses location Z).
-    // However, for direct GET /event-location/{id}, it should be user-specific.
-    const queryText = `
+    let queryText = `
         SELECT
-            el.id,
-            el.name,
-            el.full_address,
-            el.id_location,
-            el.max_capacity,
-            el.latitude AS el_latitude,
-            el.longitude AS el_longitude,
-            el.id_creator_user,
-            l.name AS location_name,
-            l.id_province,
-            l.latitude AS loc_latitude,
-            l.longitude AS loc_longitude,
-            p.name AS province_name,
-            p.full_name AS province_full_name,
-            p.latitude AS prov_latitude,
-            p.longitude AS prov_longitude
+            el.id, el.name, el.full_address, el.id_location, el.max_capacity,
+            el.latitude AS el_latitude, el.longitude AS el_longitude, el.id_creator_user,
+            l.name AS location_name, l.id_province,
+            l.latitude AS loc_latitude, l.longitude AS loc_longitude,
+            p.name AS province_name, p.full_name AS province_full_name,
+            p.latitude AS prov_latitude, p.longitude AS prov_longitude
         FROM event_locations el
         JOIN locations l ON el.id_location = l.id
         JOIN provinces p ON l.id_province = p.id
         WHERE el.id = $1
     `;
     const params = [locationId];
-    if (userId) { // If userId is provided, ensure the event location belongs to the user
+    if (userId) {
         queryText += " AND el.id_creator_user = $2";
         params.push(userId);
     }
@@ -59,7 +44,7 @@ const getEventLocationDetails = async (locationId, userId) => {
             latitude: row.loc_latitude,
             longitude: row.loc_longitude,
             province: {
-                id: row.id_province, // Province ID is same as l.id_province
+                id: row.id_province,
                 name: row.province_name,
                 full_name: row.province_full_name,
                 latitude: row.prov_latitude,
@@ -69,9 +54,6 @@ const getEventLocationDetails = async (locationId, userId) => {
     };
 };
 
-
-// GET /api/event-location (paginated, authenticated)
-// Lists event locations for the authenticated user.
 router.get(
     '/',
     protect,
@@ -122,19 +104,16 @@ router.get(
     }
 );
 
-// GET /api/event-location/{id} (authenticated)
-// Get a specific event location if it belongs to the authenticated user.
 router.get('/:id', protect, async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
     try {
-        const eventLocation = await getEventLocationDetails(id, userId); // Use helper, ensure user owns it
+        const eventLocation = await getEventLocationDetails(id, userId);
 
         if (!eventLocation) {
             return res.status(404).json({ message: 'Event location not found or not owned by user.' });
         }
-        // Check explicitly if it belongs to the user, though getEventLocationDetails with userId should handle this
         if (eventLocation.id_creator_user !== userId) {
              return res.status(404).json({ message: 'Event location not found or not owned by user (access denied).' });
         }
@@ -146,8 +125,6 @@ router.get('/:id', protect, async (req, res) => {
     }
 });
 
-// POST /api/event-location (authenticated)
-// Create a new event location for the authenticated user.
 router.post(
     '/',
     protect,
@@ -169,7 +146,6 @@ router.post(
         const userId = req.user.id;
 
         try {
-            // Check if the referenced location (id_location) exists
             const locationExists = await db.query('SELECT id FROM locations WHERE id = $1', [id_location]);
             if (locationExists.rows.length === 0) {
                 return res.status(400).json({ message: 'Invalid id_location. Location does not exist.' });
@@ -182,13 +158,12 @@ router.post(
                 [name, full_address, id_location, max_capacity, latitude, longitude, userId]
             );
 
-            const newEventLocation = await getEventLocationDetails(result.rows[0].id); // Fetch with full details
+            const newEventLocation = await getEventLocationDetails(result.rows[0].id);
 
             res.status(201).json(newEventLocation);
         } catch (error) {
             console.error('Error creating event location:', error);
-            // Check for specific DB errors, e.g., foreign key violation if id_location is invalid
-            if (error.code === '23503') { // Foreign key violation
+            if (error.code === '23503') {
                  return res.status(400).json({ message: 'Invalid id_location. Location does not exist or other integrity constraint failed.' });
             }
             res.status(500).json({ message: 'Server error while creating event location.' });
@@ -196,8 +171,6 @@ router.post(
     }
 );
 
-// PUT /api/event-location/{id} (authenticated)
-// Update an event location if it belongs to the authenticated user.
 router.put(
     '/:id',
     protect,
@@ -220,7 +193,6 @@ router.put(
         const updates = req.body;
 
         try {
-            // Check if the event location exists and belongs to the user
             const existingLocationResult = await db.query(
                 'SELECT * FROM event_locations WHERE id = $1 AND id_creator_user = $2',
                 [id, userId]
@@ -232,7 +204,6 @@ router.put(
 
             const existingLocation = existingLocationResult.rows[0];
 
-            // If id_location is being updated, check if the new location exists
             if (updates.id_location && updates.id_location !== existingLocation.id_location) {
                 const locationExists = await db.query('SELECT id FROM locations WHERE id = $1', [updates.id_location]);
                 if (locationExists.rows.length === 0) {
@@ -240,14 +211,12 @@ router.put(
                 }
             }
 
-            // Construct dynamic update query
             const fields = [];
             const values = [];
             let paramCount = 1;
 
             for (const key in updates) {
                 if (Object.prototype.hasOwnProperty.call(updates, key) && updates[key] !== undefined && key !== 'id' && key !== 'id_creator_user') {
-                     // Ensure key is a valid column name to prevent SQL injection if not using parameterized keys
                     if (['name', 'full_address', 'id_location', 'max_capacity', 'latitude', 'longitude'].includes(key)) {
                         fields.push(`${key} = $${paramCount++}`);
                         values.push(updates[key]);
@@ -259,8 +228,8 @@ router.put(
                 return res.status(400).json({ message: 'No valid fields provided for update.' });
             }
 
-            values.push(id); // For WHERE id = $paramCount
-            values.push(userId); // For WHERE id_creator_user = $paramCount+1
+            values.push(id);
+            values.push(userId);
 
             const queryText = `UPDATE event_locations SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
                                WHERE id = $${paramCount} AND id_creator_user = $${paramCount + 1} RETURNING *`;
@@ -268,16 +237,15 @@ router.put(
             const result = await db.query(queryText, values);
 
             if (result.rows.length === 0) {
-                // Should not happen if initial check passed, but as a safeguard
                 return res.status(404).json({ message: 'Event location not found after update attempt, or not owned by user.' });
             }
 
-            const updatedEventLocation = await getEventLocationDetails(result.rows[0].id); // Fetch with full details
+            const updatedEventLocation = await getEventLocationDetails(result.rows[0].id);
 
             res.status(200).json(updatedEventLocation);
         } catch (error) {
             console.error('Error updating event location:', error);
-            if (error.code === '23503') { // Foreign key violation (e.g. for id_location)
+            if (error.code === '23503') {
                  return res.status(400).json({ message: 'Invalid id_location. Location does not exist or other integrity constraint failed.' });
             }
             res.status(500).json({ message: 'Server error while updating event location.' });
@@ -285,14 +253,11 @@ router.put(
     }
 );
 
-// DELETE /api/event-location/{id} (authenticated)
-// Delete an event location if it belongs to the authenticated user and is not associated with any events.
 router.delete('/:id', protect, async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
     try {
-        // Check if the event location exists and belongs to the user
         const eventLocationResult = await db.query(
             'SELECT * FROM event_locations WHERE id = $1 AND id_creator_user = $2',
             [id, userId]
@@ -302,7 +267,6 @@ router.delete('/:id', protect, async (req, res) => {
             return res.status(404).json({ message: 'Event location not found or not owned by user.' });
         }
 
-        // Check if the event location is associated with any events
         const associatedEventsResult = await db.query(
             'SELECT id FROM events WHERE id_event_location = $1',
             [id]
@@ -312,28 +276,23 @@ router.delete('/:id', protect, async (req, res) => {
             return res.status(400).json({ message: 'Cannot delete event location. It is currently associated with one or more events.' });
         }
 
-        // Proceed with deletion
         const deleteResult = await db.query(
             'DELETE FROM event_locations WHERE id = $1 AND id_creator_user = $2 RETURNING *',
             [id, userId]
         );
 
         if (deleteResult.rowCount === 0) {
-             // Should not happen if initial checks passed
             return res.status(404).json({ message: 'Event location not found or not owned by user during deletion.' });
         }
 
         res.status(200).json({ message: 'Event location deleted successfully.', deletedLocation: deleteResult.rows[0] });
     } catch (error) {
         console.error('Error deleting event location:', error);
-        // Foreign key constraint errors might occur if ON DELETE RESTRICT is set on events table for id_event_location
-        // and somehow an event still references it (though the check above should prevent this).
-        if (error.code === '23503') { // foreign_key_violation
+        if (error.code === '23503') {
              return res.status(400).json({ message: 'Cannot delete event location due to existing references (e.g., events). Please ensure it is not in use.' });
         }
         res.status(500).json({ message: 'Server error while deleting event location.' });
     }
 });
-
 
 module.exports = router;

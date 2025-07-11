@@ -1,12 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
-const { query, validationResult } = require('express-validator');
+const { query, validationResult, body } = require('express-validator');
+const { protect } = require('../middleware/authMiddleware');
 
-// --- Helper function to structure event data ---
-// This function will be expanded to include creator user, location details, and tags
 const structureEventData = (eventRow) => {
-    // Basic structure, will be enhanced
     return {
         id: eventRow.event_id,
         name: eventRow.event_name,
@@ -16,7 +14,6 @@ const structureEventData = (eventRow) => {
         price: eventRow.price,
         enabled_for_enrollment: eventRow.enabled_for_enrollment,
         max_assistance: eventRow.max_assistance,
-        // Placeholder for related objects
         event_location: {
             id: eventRow.el_id,
             name: eventRow.el_name,
@@ -43,19 +40,15 @@ const structureEventData = (eventRow) => {
             first_name: eventRow.user_first_name,
             last_name: eventRow.user_last_name,
             username: eventRow.user_username,
-            // Password should NOT be included here
         },
-        tags: eventRow.tags || [] // Will be populated by a separate query
+        tags: eventRow.tags || []
     };
 };
 
-
-// GET /api/event/ - List all events (paginated)
-// Allows filtering by name, startdate, tag
 router.get(
     '/',
     [
-        query('limit').optional().isInt({ min: 1 }).toInt().default(15), // Default from example
+        query('limit').optional().isInt({ min: 1 }).toInt().default(15),
         query('offset').optional().isInt({ min: 0 }).toInt().default(0),
         query('name').optional().isString().trim(),
         query('startdate').optional().isISO8601().toDate().withMessage('Start date must be a valid date in YYYY-MM-DD format.'),
@@ -78,12 +71,9 @@ router.get(
             queryParams.push(`%${name}%`);
         }
         if (startdate) {
-            // Assuming startdate query is for events ON that date, not FROM that date.
-            // Adjust if events starting from that date onwards is intended.
             whereClauses.push(`DATE(e.start_date) = DATE($${paramIndex++})`);
             queryParams.push(startdate);
         }
-        // Tag filtering will require a subquery or join with event_tags and tags tables
         if (tag) {
             whereClauses.push(`EXISTS (
                 SELECT 1
@@ -96,8 +86,6 @@ router.get(
 
         const whereCondition = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-        // Main query to fetch events with their related data
-        // This query is complex due to multiple JOINs. Performance should be monitored.
         const eventsQueryText = `
             SELECT
                 e.id AS event_id, e.name AS event_name, e.description, e.start_date, e.duration_in_minutes, e.price,
@@ -127,19 +115,14 @@ router.get(
             ${whereCondition}
         `;
 
-        // Add limit and offset to queryParams for the main query
         const finalQueryParams = [...queryParams, limit, offset];
-        // Count query uses the same filters but not limit/offset
         const countQueryParams = [...queryParams];
-
 
         try {
             const eventsResult = await db.query(eventsQueryText, finalQueryParams);
             const totalResult = await db.query(countQueryText, countQueryParams);
-
             const total = parseInt(totalResult.rows[0].count, 10);
 
-            // Fetch tags for each event
             const eventIds = eventsResult.rows.map(event => event.event_id);
             let tagsByEventId = {};
             if (eventIds.length > 0) {
@@ -173,14 +156,8 @@ router.get(
 
             res.status(200).json({
                 collection,
-                pagination: {
-                    limit,
-                    offset,
-                    nextPage,
-                    total
-                }
+                pagination: { limit, offset, nextPage, total }
             });
-
         } catch (error) {
             console.error('Error fetching events:', error);
             res.status(500).json({ message: 'Server error while fetching events.' });
@@ -188,100 +165,8 @@ router.get(
     }
 );
 
-// GET /api/event/{id}/participants (paginated, authenticated)
-// Lists all users enrolled in a specific event.
-// Access restricted to the event creator.
-router.get(
-    '/:id/participants',
-    protect,
-    [
-        query('limit').optional().isInt({ min: 1 }).toInt().default(15),
-        query('offset').optional().isInt({ min: 0 }).toInt().default(0)
-    ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const eventId = req.params.id;
-        const requestingUserId = req.user.id;
-        const { limit, offset } = req.query;
-
-        try {
-            // 1. Check if event exists
-            const eventResult = await db.query('SELECT id, id_creator_user FROM events WHERE id = $1', [eventId]);
-            if (eventResult.rows.length === 0) {
-                return res.status(404).json({ success: false, message: 'Event not found.' });
-            }
-            const event = eventResult.rows[0];
-
-            // 2. Authorize: Check if the requesting user is the creator of the event
-            if (event.id_creator_user !== requestingUserId) {
-                return res.status(403).json({ success: false, message: 'Forbidden. Only the event creator can view participants.' });
-            }
-
-            // 3. Fetch participants
-            const participantsQuery = `
-                SELECT
-                    u.id AS user_id,
-                    u.username,
-                    u.first_name,
-                    u.last_name,
-                    ee.attended,
-                    ee.rating,
-                    ee.description AS feedback_description,
-                    ee.registration_date_time
-                FROM event_enrollments ee
-                JOIN users u ON ee.id_user = u.id
-                WHERE ee.id_event = $1
-                ORDER BY ee.registration_date_time ASC
-                LIMIT $2 OFFSET $3
-            `;
-            const participantsResult = await db.query(participantsQuery, [eventId, limit, offset]);
-
-            const totalParticipantsQuery = 'SELECT COUNT(*) FROM event_enrollments WHERE id_event = $1';
-            const totalResult = await db.query(totalParticipantsQuery, [eventId]);
-            const total = parseInt(totalResult.rows[0].count, 10);
-
-            const collection = participantsResult.rows.map(row => ({
-                user: {
-                    id: row.user_id,
-                    username: row.username,
-                    first_name: row.first_name,
-                    last_name: row.last_name
-                },
-                attended: row.attended,
-                rating: row.rating,
-                description: row.feedback_description, // Renamed from feedback_description for consistency with example
-                // registration_date_time: row.registration_date_time // Not in example output, but available
-            }));
-
-            const nextPageOffset = offset + limit;
-            const nextPage = (nextPageOffset < total) ?
-                `/api/event/${eventId}/participants?limit=${limit}&offset=${nextPageOffset}` : null;
-
-            res.status(200).json({
-                collection,
-                pagination: {
-                    limit,
-                    offset,
-                    nextPage,
-                    total
-                }
-            });
-
-        } catch (error) {
-            console.error('Error fetching event participants:', error);
-            res.status(500).json({ success: false, message: 'Server error while fetching event participants.' });
-        }
-    }
-);
-
-// GET /api/event/{id} - Get event details
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
-
     if (isNaN(parseInt(id, 10))) {
         return res.status(400).json({ message: "Event ID must be an integer." });
     }
@@ -293,7 +178,7 @@ router.get('/:id', async (req, res) => {
                 e.enabled_for_enrollment, e.max_assistance, e.id_creator_user,
                 el.id AS el_id, el.name AS el_name, el.full_address AS el_full_address, el.max_capacity AS el_max_capacity,
                 el.latitude AS el_latitude, el.longitude AS el_longitude, el.id_location AS el_id_location,
-                el.id_creator_user AS el_id_creator_user, /* Event Location Creator */
+                el.id_creator_user AS el_id_creator_user,
                 l.id AS loc_id, l.name AS loc_name, l.id_province AS loc_id_province,
                 l.latitude AS loc_latitude, l.longitude AS loc_longitude,
                 p.id AS prov_id, p.name AS prov_name, p.full_name AS prov_full_name,
@@ -303,10 +188,10 @@ router.get('/:id', async (req, res) => {
                 el_creator.last_name AS el_creator_last_name, el_creator.username AS el_creator_username
             FROM events e
             JOIN event_locations el ON e.id_event_location = el.id
-            JOIN users el_creator ON el.id_creator_user = el_creator.id /* User who created event_location */
+            JOIN users el_creator ON el.id_creator_user = el_creator.id
             JOIN locations l ON el.id_location = l.id
             JOIN provinces p ON l.id_province = p.id
-            JOIN users u ON e.id_creator_user = u.id /* User who created event */
+            JOIN users u ON e.id_creator_user = u.id
             WHERE e.id = $1
         `;
         const eventResult = await db.query(eventQueryText, [id]);
@@ -314,21 +199,18 @@ router.get('/:id', async (req, res) => {
         if (eventResult.rows.length === 0) {
             return res.status(404).json({ message: 'Event not found.' });
         }
-
         const eventRow = eventResult.rows[0];
 
-        // Fetch tags for the event
         const tagsQuery = await db.query(
             'SELECT t.id, t.name FROM tags t JOIN event_tags et ON t.id = et.id_tag WHERE et.id_event = $1',
             [id]
         );
 
-        // Structure the event data including nested objects as per the example
         const response = {
             id: eventRow.event_id,
             name: eventRow.event_name,
             description: eventRow.description,
-            id_event_location: eventRow.el_id, // As per example output structure
+            id_event_location: eventRow.el_id,
             start_date: eventRow.start_date,
             duration_in_minutes: eventRow.duration_in_minutes,
             price: eventRow.price,
@@ -343,7 +225,7 @@ router.get('/:id', async (req, res) => {
                 max_capacity: eventRow.el_max_capacity,
                 latitude: eventRow.el_latitude,
                 longitude: eventRow.el_longitude,
-                id_creator_user: eventRow.el_id_creator_user, // Creator of the event_location
+                id_creator_user: eventRow.el_id_creator_user,
                 location: {
                     id: eventRow.loc_id,
                     name: eventRow.loc_name,
@@ -356,47 +238,33 @@ router.get('/:id', async (req, res) => {
                         full_name: eventRow.prov_full_name,
                         latitude: eventRow.prov_latitude,
                         longitude: eventRow.prov_longitude,
-                        display_order: null // Not in DB schema, but in example
+                        display_order: null
                     }
                 },
-                creator_user: { // Creator of the event_location
+                creator_user: {
                     id: eventRow.el_creator_id,
                     first_name: eventRow.el_creator_first_name,
                     last_name: eventRow.el_creator_last_name,
                     username: eventRow.el_creator_username,
-                    password: "******" // As per example
+                    password: "******"
                 }
             },
             tags: tagsQuery.rows.map(tag => ({ id: tag.id, name: tag.name })),
-            creator_user: { // Creator of the event
+            creator_user: {
                 id: eventRow.user_id,
                 first_name: eventRow.user_first_name,
                 last_name: eventRow.user_last_name,
                 username: eventRow.user_username,
-                password: "******" // As per example
+                password: "******"
             }
         };
-
         res.status(200).json(response);
-
     } catch (error) {
         console.error(`Error fetching event with ID ${id}:`, error);
         res.status(500).json({ message: 'Server error while fetching event details.' });
     }
 });
 
-
-// Placeholder for future authenticated routes (POST, PUT, DELETE for events)
-// router.post('/', protect, ...);
-// router.put('/:id', protect, ...);
-// router.delete('/:id', protect, ...);
-// router.post('/:id/enrollment', protect, ...);
-// router.delete('/:id/enrollment', protect, ...);
-const { protect } = require('../middleware/authMiddleware'); // Added for authenticated routes
-const { body } = require('express-validator'); // Added for body validation
-
-// POST /api/event/ (necesita autenticación)
-// Inserts un evento que es enviado en el body de request (no lleva id).
 router.post(
     '/',
     protect,
@@ -423,21 +291,15 @@ router.post(
         const id_creator_user = req.user.id;
 
         try {
-            // Check if id_event_location exists and get its max_capacity
             const eventLocationResult = await db.query('SELECT max_capacity FROM event_locations WHERE id = $1', [id_event_location]);
             if (eventLocationResult.rows.length === 0) {
                 return res.status(400).json({ success: false, message: 'Event location not found.' });
             }
             const { max_capacity: location_max_capacity } = eventLocationResult.rows[0];
 
-            // Business rule: max_assistance <= max_capacity of id_event_location
             if (parseInt(max_assistance, 10) > parseInt(location_max_capacity, 10)) {
                 return res.status(400).json({ success: false, message: 'max_assistance cannot exceed the max_capacity of the event location.' });
             }
-
-            // Price and duration checks are handled by validation, but can be double-checked if necessary.
-            // Price >= 0 (handled by custom validator)
-            // Duration > 0 (handled by validator)
 
             const newEvent = await db.query(
                 `INSERT INTO events (name, description, id_event_location, start_date, duration_in_minutes, price, enabled_for_enrollment, max_assistance, id_creator_user)
@@ -445,7 +307,6 @@ router.post(
                 [name, description, id_event_location, start_date, duration_in_minutes, price, enabled_for_enrollment, max_assistance, id_creator_user]
             );
 
-            // Fetch the full event details to return, similar to GET /api/event/:id
             const eventDetailQuery = `
                 SELECT
                     e.id AS event_id, e.name AS event_name, e.description, e.start_date, e.duration_in_minutes, e.price,
@@ -470,11 +331,11 @@ router.post(
             `;
             const eventResult = await db.query(eventDetailQuery, [newEvent.rows[0].id]);
             const eventRow = eventResult.rows[0];
-            const tagsQuery = await db.query( // New events won't have tags yet, but for consistency
+            const tagsQuery = await db.query(
                 'SELECT t.id, t.name FROM tags t JOIN event_tags et ON t.id = et.id_tag WHERE et.id_event = $1',
                 [newEvent.rows[0].id]
             );
-            const response = { /* ... structure like GET /:id ... */
+            const response = {
                 id: eventRow.event_id, name: eventRow.event_name, description: eventRow.description,
                 id_event_location: eventRow.el_id, start_date: eventRow.start_date,
                 duration_in_minutes: eventRow.duration_in_minutes, price: eventRow.price,
@@ -498,17 +359,16 @@ router.post(
                         last_name: eventRow.el_creator_last_name, username: eventRow.el_creator_username, password: "******"
                     }
                 },
-                tags: tagsQuery.rows.map(tag => ({ id: tag.id, name: tag.name })), // Will be empty
+                tags: tagsQuery.rows.map(tag => ({ id: tag.id, name: tag.name })),
                 creator_user: {
                     id: eventRow.user_id, first_name: eventRow.user_first_name, last_name: eventRow.user_last_name,
                     username: eventRow.user_username, password: "******"
                 }
             };
             res.status(201).json(response);
-
         } catch (error) {
             console.error('Error creating event:', error);
-            if (error.code === '23503') { // Foreign key constraint (e.g. id_event_location invalid)
+            if (error.code === '23503') {
                  return res.status(400).json({ success: false, message: 'Invalid id_event_location or other foreign key constraint failed.' });
             }
             res.status(500).json({ success: false, message: 'Server error while creating event.' });
@@ -516,9 +376,6 @@ router.post(
     }
 );
 
-
-// PUT /api/event/{id} (necesita autenticación) - Note: Spec says PUT /api/event/ but REST usually has /:id for specific resource
-// Assuming it should be PUT /api/event/{id}
 router.put(
     '/:id',
     protect,
@@ -543,14 +400,12 @@ router.put(
         const updates = req.body;
 
         try {
-            // Check if event exists and belongs to the user
             const eventCheck = await db.query('SELECT * FROM events WHERE id = $1 AND id_creator_user = $2', [eventId, userId]);
             if (eventCheck.rows.length === 0) {
                 return res.status(404).json({ success: false, message: 'Event not found or user not authorized to update this event.' });
             }
             const currentEvent = eventCheck.rows[0];
 
-            // Handle max_assistance vs max_capacity rule
             let newMaxAssistance = updates.max_assistance !== undefined ? parseInt(updates.max_assistance, 10) : parseInt(currentEvent.max_assistance, 10);
             let eventLocationId = updates.id_event_location !== undefined ? updates.id_event_location : currentEvent.id_event_location;
 
@@ -564,14 +419,12 @@ router.put(
                  return res.status(400).json({ success: false, message: 'max_assistance cannot exceed the max_capacity of the event location.' });
             }
 
-            // Construct dynamic update query
             const fieldsToUpdate = [];
             const values = [];
             let paramCount = 1;
 
             for (const key in updates) {
                 if (Object.prototype.hasOwnProperty.call(updates, key) && updates[key] !== undefined) {
-                    // Ensure key is a valid column name for events table
                     if (['name', 'description', 'id_event_location', 'start_date', 'duration_in_minutes', 'price', 'enabled_for_enrollment', 'max_assistance'].includes(key)) {
                         fieldsToUpdate.push(`${key} = $${paramCount++}`);
                         values.push(updates[key]);
@@ -592,11 +445,9 @@ router.put(
             const updateResult = await db.query(queryText, values);
 
             if (updateResult.rows.length === 0) {
-                // This case should ideally be caught by the initial check, but as a safeguard
                 return res.status(404).json({ success: false, message: 'Event not found or user not authorized (update failed).' });
             }
 
-            // Fetch and return the updated event details
             const eventDetailQuery = `
                 SELECT
                     e.id AS event_id, e.name AS event_name, e.description, e.start_date, e.duration_in_minutes, e.price,
@@ -625,7 +476,7 @@ router.put(
                 'SELECT t.id, t.name FROM tags t JOIN event_tags et ON t.id = et.id_tag WHERE et.id_event = $1',
                 [updateResult.rows[0].id]
             );
-             const response = { /* ... structure like GET /:id ... */
+             const response = {
                 id: eventRow.event_id, name: eventRow.event_name, description: eventRow.description,
                 id_event_location: eventRow.el_id, start_date: eventRow.start_date,
                 duration_in_minutes: eventRow.duration_in_minutes, price: eventRow.price,
@@ -656,10 +507,9 @@ router.put(
                 }
             };
             res.status(200).json(response);
-
         } catch (error) {
             console.error('Error updating event:', error);
-             if (error.code === '23503') { // Foreign key constraint (e.g. id_event_location invalid)
+             if (error.code === '23503') {
                  return res.status(400).json({ success: false, message: 'Invalid id_event_location or other foreign key constraint failed during update.' });
             }
             res.status(500).json({ success: false, message: 'Server error while updating event.' });
@@ -667,61 +517,42 @@ router.put(
     }
 );
 
-
-// DELETE /api/event/{id} (necesita autenticación)
 router.delete('/:id', protect, async (req, res) => {
     const eventId = req.params.id;
     const userId = req.user.id;
 
     try {
-        // Check if event exists and belongs to the user
         const eventCheck = await db.query('SELECT id FROM events WHERE id = $1 AND id_creator_user = $2', [eventId, userId]);
         if (eventCheck.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Event not found or user not authorized to delete this event.' });
         }
 
-        // Check if there are any users registered for the event
         const enrollmentCheck = await db.query('SELECT COUNT(*) FROM event_enrollments WHERE id_event = $1', [eventId]);
         if (parseInt(enrollmentCheck.rows[0].count, 10) > 0) {
             return res.status(400).json({ success: false, message: 'Cannot delete event. There are users registered for this event.' });
         }
 
-        // Proceed with deletion
-        const deleteResult = await db.query('DELETE FROM events WHERE id = $1 RETURNING *', [eventId]); // No need to check userId again, already verified
+        const deleteResult = await db.query('DELETE FROM events WHERE id = $1 RETURNING *', [eventId]);
 
         if (deleteResult.rows.length === 0) {
-            // Should not happen if initial check passed
             return res.status(404).json({ success: false, message: 'Event not found during deletion attempt.' });
         }
 
-        // Return the deleted event data (or just a success message)
-        // The spec says "Retorna un status code 200 (ok) y los datos."
-        // To return full data, we'd need to fetch it before deleting or reconstruct.
-        // Simpler to return what RETURNING gives or just a success message.
-        // For now, returning the basic data from the deleted row.
         res.status(200).json({ success: true, message: 'Event deleted successfully.', data: deleteResult.rows[0] });
-
     } catch (error) {
         console.error('Error deleting event:', error);
         res.status(500).json({ success: false, message: 'Server error while deleting event.' });
     }
 });
 
-
-// router.get('/:id/participants', protect, ...);
-
-
-// POST /api/event/{id}/enrollment/ (necesita autenticación)
-// Registra al usuario (autenticado) al evento enviado por parámetro.
 router.post(
-    '/:id/enrollment', // Note: spec has trailing slash, Express handles both with and without by default
+    '/:id/enrollment',
     protect,
     async (req, res) => {
         const eventId = req.params.id;
         const userId = req.user.id;
 
         try {
-            // 1. Check if event exists
             const eventResult = await db.query(
                 'SELECT * FROM events WHERE id = $1',
                 [eventId]
@@ -731,23 +562,19 @@ router.post(
             }
             const event = eventResult.rows[0];
 
-            // 2. Check if event is enabled for enrollment
             if (!event.enabled_for_enrollment) {
                 return res.status(400).json({ success: false, message: 'Event is not enabled for enrollment.' });
             }
 
-            // 3. Check if event has already started or is today
             const now = new Date();
             const eventStartDate = new Date(event.start_date);
-            // Clear time part for comparison if event is "today"
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const eventStartDay = new Date(eventStartDate.getFullYear(), eventStartDate.getMonth(), eventStartDate.getDate());
 
-            if (eventStartDate <= now || eventStartDay <= today) { // Spec: "evento que ya sucedió (start_date), o la fecha del evento es hoy"
+            if (eventStartDate <= now || eventStartDay <= today) {
                 return res.status(400).json({ success: false, message: 'Cannot enroll in an event that has already started or is scheduled for today.' });
             }
 
-            // 4. Check if user is already registered
             const existingEnrollment = await db.query(
                 'SELECT id FROM event_enrollments WHERE id_event = $1 AND id_user = $2',
                 [eventId, userId]
@@ -756,7 +583,6 @@ router.post(
                 return res.status(400).json({ success: false, message: 'User is already registered for this event.' });
             }
 
-            // 5. Check max_assistance
             const currentEnrollmentsCountResult = await db.query(
                 'SELECT COUNT(*) FROM event_enrollments WHERE id_event = $1',
                 [eventId]
@@ -766,8 +592,7 @@ router.post(
                 return res.status(400).json({ success: false, message: 'Event has reached its maximum assistance capacity.' });
             }
 
-            // All checks passed, proceed with enrollment
-            const registrationDateTime = new Date(); // Current date and time
+            const registrationDateTime = new Date();
             const newEnrollmentResult = await db.query(
                 'INSERT INTO event_enrollments (id_event, id_user, registration_date_time) VALUES ($1, $2, $3) RETURNING *',
                 [eventId, userId, registrationDateTime]
@@ -778,7 +603,6 @@ router.post(
                 message: 'Successfully enrolled in the event.',
                 enrollment: newEnrollmentResult.rows[0]
             });
-
         } catch (error) {
             console.error('Error during event enrollment:', error);
             res.status(500).json({ success: false, message: 'Server error during event enrollment.' });
@@ -786,24 +610,20 @@ router.post(
     }
 );
 
-// DELETE /api/event/{id}/enrollment/ (necesita autenticación)
-// Remueve al usuario (autenticado) del evento enviado por parámetro.
 router.delete(
-    '/:id/enrollment', // Note: spec has trailing slash
+    '/:id/enrollment',
     protect,
     async (req, res) => {
         const eventId = req.params.id;
         const userId = req.user.id;
 
         try {
-            // 1. Check if event exists (optional, but good for a clear 404 if event ID is totally wrong)
             const eventResult = await db.query('SELECT start_date FROM events WHERE id = $1', [eventId]);
             if (eventResult.rows.length === 0) {
                 return res.status(404).json({ success: false, message: 'Event not found.' });
             }
             const event = eventResult.rows[0];
 
-            // 2. Check if user is actually registered for this event
             const enrollmentCheck = await db.query(
                 'SELECT id FROM event_enrollments WHERE id_event = $1 AND id_user = $2',
                 [eventId, userId]
@@ -812,7 +632,6 @@ router.delete(
                 return res.status(400).json({ success: false, message: 'User is not registered for this event.' });
             }
 
-            // 3. Check if event has already started or is today
             const now = new Date();
             const eventStartDate = new Date(event.start_date);
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -822,25 +641,21 @@ router.delete(
                 return res.status(400).json({ success: false, message: 'Cannot unenroll from an event that has already started or is scheduled for today.' });
             }
 
-            // All checks passed, proceed with unenrollment
             const deleteResult = await db.query(
                 'DELETE FROM event_enrollments WHERE id_event = $1 AND id_user = $2 RETURNING id',
                 [eventId, userId]
             );
 
             if (deleteResult.rowCount === 0) {
-                // Should be caught by the enrollmentCheck earlier, but as a safeguard
                 return res.status(400).json({ success: false, message: 'Failed to unenroll. User might not have been registered or event ID is incorrect.' });
             }
 
             res.status(200).json({ success: true, message: 'Successfully unenrolled from the event.' });
-
         } catch (error) {
             console.error('Error during event unenrollment:', error);
             res.status(500).json({ success: false, message: 'Server error during event unenrollment.' });
         }
     }
 );
-
 
 module.exports = router;
