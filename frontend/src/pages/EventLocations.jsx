@@ -99,18 +99,27 @@ const EventLocations = () => {
                   <h3 className="font-semibold text-lg text-gray-900 line-clamp-2">
                     {location.name}
                   </h3>
-                  <button
-                    onClick={() => handleDeleteLocation(location.id)}
-                    disabled={deletingId === location.id}
-                    className="btn-danger px-3 py-2"
-                    title="Eliminar ubicación"
-                  >
-                    {deletingId === location.id ? (
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    ) : (
-                      <Trash2 className="w-4 h-4" />
-                    )}
-                  </button>
+                  <div className="flex space-x-2">
+                    <Link
+                      to={`/edit-location/${location.id}`}
+                      className="btn-secondary px-3 py-2"
+                      title="Editar ubicación"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </Link>
+                    <button
+                      onClick={() => handleDeleteLocation(location.id)}
+                      disabled={deletingId === location.id}
+                      className="btn-danger px-3 py-2"
+                      title="Eliminar ubicación"
+                    >
+                      {deletingId === location.id ? (
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-2 mb-4">

@@ -9,6 +9,8 @@ import MyEvents from './pages/MyEvents'
 import CreateEvent from './pages/CreateEvent'
 import EventLocations from './pages/EventLocations'
 import CreateEventLocation from './pages/CreateEventLocation'
+import EditEvent from './pages/EditEvent'
+import EditEventLocation from './pages/EditEventLocation'
 import ProtectedRoute from './components/ProtectedRoute'
 
 function App() {
@@ -40,6 +42,16 @@ function App() {
           <Route path="/create-location" element={
             <ProtectedRoute>
               <CreateEventLocation />
+            </ProtectedRoute>
+          } />
+          <Route path="/edit-event/:id" element={
+            <ProtectedRoute>
+              <EditEvent />
+            </ProtectedRoute>
+          } />
+          <Route path="/edit-location/:id" element={
+            <ProtectedRoute>
+              <EditEventLocation />
             </ProtectedRoute>
           } />
         </Routes>

@@ -1,57 +1,22 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../config/db');
+const { body, query, validationResult } = require('express-validator');
 const { protect } = require('../middleware/authMiddleware');
-const { body, validationResult, query } = require('express-validator');
+const eventLocationService = require('../services/eventLocationService');
 
-const getEventLocationDetails = async (locationId, userId) => {
-    let queryText = `
-        SELECT
-            el.id, el.name, el.full_address, el.id_location, el.max_capacity,
-            el.latitude AS el_latitude, el.longitude AS el_longitude, el.id_creator_user,
-            l.name AS location_name, l.id_province,
-            l.latitude AS loc_latitude, l.longitude AS loc_longitude,
-            p.name AS province_name, p.full_name AS province_full_name,
-            p.latitude AS prov_latitude, p.longitude AS prov_longitude
-        FROM event_locations el
-        JOIN locations l ON el.id_location = l.id
-        JOIN provinces p ON l.id_province = p.id
-        WHERE el.id = $1
-    `;
-    const params = [locationId];
-    if (userId) {
-        queryText += " AND el.id_creator_user = $2";
-        params.push(userId);
+const handleValidationErrors = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, message: errors.array()[0].msg });
     }
+    next();
+};
 
-    const { rows } = await db.query(queryText, params);
-    if (rows.length === 0) {
-        return null;
-    }
-    const row = rows[0];
-    return {
-        id: row.id,
-        name: row.name,
-        full_address: row.full_address,
-        max_capacity: row.max_capacity,
-        latitude: row.el_latitude,
-        longitude: row.el_longitude,
-        id_creator_user: row.id_creator_user,
-        location: {
-            id: row.id_location,
-            name: row.location_name,
-            id_province: row.id_province,
-            latitude: row.loc_latitude,
-            longitude: row.loc_longitude,
-            province: {
-                id: row.id_province,
-                name: row.province_name,
-                full_name: row.province_full_name,
-                latitude: row.prov_latitude,
-                longitude: row.prov_longitude
-            }
-        }
-    };
+const apiErrorHandler = (err, req, res, next) => {
+    const statusCode = err.statusCode || 500;
+    const message = err.message || 'An unexpected error occurred.';
+    console.error('API Error:', err.message);
+    res.status(statusCode).json({ success: false, message });
 };
 
 router.get(
@@ -61,67 +26,25 @@ router.get(
         query('limit').optional().isInt({ min: 1 }).toInt().default(10),
         query('offset').optional().isInt({ min: 0 }).toInt().default(0)
     ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { limit, offset } = req.query;
-        const userId = req.user.id;
-
+    handleValidationErrors,
+    async (req, res, next) => {
         try {
-            const eventLocationsPromise = db.query(
-                `SELECT el.*, l.name as location_name, p.name as province_name
-                 FROM event_locations el
-                 JOIN locations l ON el.id_location = l.id
-                 JOIN provinces p ON l.id_province = p.id
-                 WHERE el.id_creator_user = $1
-                 ORDER BY el.id ASC
-                 LIMIT $2 OFFSET $3`,
-                [userId, limit, offset]
-            );
-            const totalPromise = db.query('SELECT COUNT(*) FROM event_locations WHERE id_creator_user = $1', [userId]);
-
-            const [eventLocationsResult, totalResult] = await Promise.all([eventLocationsPromise, totalPromise]);
-
-            const total = parseInt(totalResult.rows[0].count, 10);
+            const { limit, offset } = req.query;
+            const { collection, total } = await eventLocationService.getEventLocationsByUser(req.user.id, limit, offset);
             const nextPage = (offset + limit < total) ? `/api/event-location?limit=${limit}&offset=${offset + limit}` : null;
-
-            res.status(200).json({
-                collection: eventLocationsResult.rows,
-                pagination: {
-                    limit,
-                    offset,
-                    nextPage,
-                    total
-                }
-            });
+            res.status(200).json({ collection, pagination: { limit, offset, nextPage, total } });
         } catch (error) {
-            console.error('Error fetching event locations:', error);
-            res.status(500).json({ message: 'Server error while fetching event locations.' });
+            next(error);
         }
     }
 );
 
-router.get('/:id', protect, async (req, res) => {
-    const { id } = req.params;
-    const userId = req.user.id;
-
+router.get('/:id', protect, async (req, res, next) => {
     try {
-        const eventLocation = await getEventLocationDetails(id, userId);
-
-        if (!eventLocation) {
-            return res.status(404).json({ message: 'Event location not found or not owned by user.' });
-        }
-        if (eventLocation.id_creator_user !== userId) {
-             return res.status(404).json({ message: 'Event location not found or not owned by user (access denied).' });
-        }
-
+        const eventLocation = await eventLocationService.getEventLocationById(req.params.id, req.user.id);
         res.status(200).json(eventLocation);
     } catch (error) {
-        console.error('Error fetching event location by ID:', error);
-        res.status(500).json({ message: 'Server error while fetching event location.' });
+        next(error);
     }
 });
 
@@ -136,37 +59,13 @@ router.post(
         body('latitude').optional().isDecimal().withMessage('Latitude must be a decimal value.'),
         body('longitude').optional().isDecimal().withMessage('Longitude must be a decimal value.')
     ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { name, full_address, id_location, max_capacity, latitude, longitude } = req.body;
-        const userId = req.user.id;
-
+    handleValidationErrors,
+    async (req, res, next) => {
         try {
-            const locationExists = await db.query('SELECT id FROM locations WHERE id = $1', [id_location]);
-            if (locationExists.rows.length === 0) {
-                return res.status(400).json({ message: 'Invalid id_location. Location does not exist.' });
-            }
-
-            const result = await db.query(
-                `INSERT INTO event_locations
-                 (name, full_address, id_location, max_capacity, latitude, longitude, id_creator_user)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-                [name, full_address, id_location, max_capacity, latitude, longitude, userId]
-            );
-
-            const newEventLocation = await getEventLocationDetails(result.rows[0].id);
-
-            res.status(201).json(newEventLocation);
+            const newLocation = await eventLocationService.createNewEventLocation(req.body, req.user.id);
+            res.status(201).json(newLocation);
         } catch (error) {
-            console.error('Error creating event location:', error);
-            if (error.code === '23503') {
-                 return res.status(400).json({ message: 'Invalid id_location. Location does not exist or other integrity constraint failed.' });
-            }
-            res.status(500).json({ message: 'Server error while creating event location.' });
+            next(error);
         }
     }
 );
@@ -182,117 +81,26 @@ router.put(
         body('latitude').optional().isDecimal().withMessage('Latitude must be a decimal value if provided.'),
         body('longitude').optional().isDecimal().withMessage('Longitude must be a decimal value if provided.')
     ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { id } = req.params;
-        const userId = req.user.id;
-        const updates = req.body;
-
+    handleValidationErrors,
+    async (req, res, next) => {
         try {
-            const existingLocationResult = await db.query(
-                'SELECT * FROM event_locations WHERE id = $1 AND id_creator_user = $2',
-                [id, userId]
-            );
-
-            if (existingLocationResult.rows.length === 0) {
-                return res.status(404).json({ message: 'Event location not found or not owned by user.' });
-            }
-
-            const existingLocation = existingLocationResult.rows[0];
-
-            if (updates.id_location && updates.id_location !== existingLocation.id_location) {
-                const locationExists = await db.query('SELECT id FROM locations WHERE id = $1', [updates.id_location]);
-                if (locationExists.rows.length === 0) {
-                    return res.status(400).json({ message: 'Invalid new id_location. Location does not exist.' });
-                }
-            }
-
-            const fields = [];
-            const values = [];
-            let paramCount = 1;
-
-            for (const key in updates) {
-                if (Object.prototype.hasOwnProperty.call(updates, key) && updates[key] !== undefined && key !== 'id' && key !== 'id_creator_user') {
-                    if (['name', 'full_address', 'id_location', 'max_capacity', 'latitude', 'longitude'].includes(key)) {
-                        fields.push(`${key} = $${paramCount++}`);
-                        values.push(updates[key]);
-                    }
-                }
-            }
-
-            if (fields.length === 0) {
-                return res.status(400).json({ message: 'No valid fields provided for update.' });
-            }
-
-            values.push(id);
-            values.push(userId);
-
-            const queryText = `UPDATE event_locations SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-                               WHERE id = $${paramCount} AND id_creator_user = $${paramCount + 1} RETURNING *`;
-
-            const result = await db.query(queryText, values);
-
-            if (result.rows.length === 0) {
-                return res.status(404).json({ message: 'Event location not found after update attempt, or not owned by user.' });
-            }
-
-            const updatedEventLocation = await getEventLocationDetails(result.rows[0].id);
-
-            res.status(200).json(updatedEventLocation);
+            const updatedLocation = await eventLocationService.updateExistingEventLocation(req.params.id, req.user.id, req.body);
+            res.status(200).json(updatedLocation);
         } catch (error) {
-            console.error('Error updating event location:', error);
-            if (error.code === '23503') {
-                 return res.status(400).json({ message: 'Invalid id_location. Location does not exist or other integrity constraint failed.' });
-            }
-            res.status(500).json({ message: 'Server error while updating event location.' });
+            next(error);
         }
     }
 );
 
-router.delete('/:id', protect, async (req, res) => {
-    const { id } = req.params;
-    const userId = req.user.id;
-
+router.delete('/:id', protect, async (req, res, next) => {
     try {
-        const eventLocationResult = await db.query(
-            'SELECT * FROM event_locations WHERE id = $1 AND id_creator_user = $2',
-            [id, userId]
-        );
-
-        if (eventLocationResult.rows.length === 0) {
-            return res.status(404).json({ message: 'Event location not found or not owned by user.' });
-        }
-
-        const associatedEventsResult = await db.query(
-            'SELECT id FROM events WHERE id_event_location = $1',
-            [id]
-        );
-
-        if (associatedEventsResult.rows.length > 0) {
-            return res.status(400).json({ message: 'Cannot delete event location. It is currently associated with one or more events.' });
-        }
-
-        const deleteResult = await db.query(
-            'DELETE FROM event_locations WHERE id = $1 AND id_creator_user = $2 RETURNING *',
-            [id, userId]
-        );
-
-        if (deleteResult.rowCount === 0) {
-            return res.status(404).json({ message: 'Event location not found or not owned by user during deletion.' });
-        }
-
-        res.status(200).json({ message: 'Event location deleted successfully.', deletedLocation: deleteResult.rows[0] });
+        const deletedLocation = await eventLocationService.deleteExistingEventLocation(req.params.id, req.user.id);
+        res.status(200).json({ message: 'Event location deleted successfully.', deletedLocation });
     } catch (error) {
-        console.error('Error deleting event location:', error);
-        if (error.code === '23503') {
-             return res.status(400).json({ message: 'Cannot delete event location due to existing references (e.g., events). Please ensure it is not in use.' });
-        }
-        res.status(500).json({ message: 'Server error while deleting event location.' });
+        next(error);
     }
 });
+
+router.use(apiErrorHandler);
 
 module.exports = router;
