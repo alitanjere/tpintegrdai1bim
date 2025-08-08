@@ -16,24 +16,29 @@ const EventDetail = () => {
   const [isEnrolled, setIsEnrolled] = useState(false)
 
   useEffect(() => {
-    fetchEventDetail()
-  }, [id])
+    const fetchDetails = async () => {
+      setLoading(true)
+      try {
+        const eventResponse = await api.get(`/event/${id}`)
+        setEvent(eventResponse.data)
 
-  const fetchEventDetail = async () => {
-    try {
-      const response = await api.get(`/event/${id}`)
-      setEvent(response.data)
-      
-      // Check if user is enrolled (this would require an additional endpoint in your API)
-      // For now, we'll assume the user is not enrolled
-      setIsEnrolled(false)
-    } catch (error) {
-      toast.error('Error al cargar el evento')
-      navigate('/events')
-    } finally {
-      setLoading(false)
+        if (user) {
+          // This is not ideal, a dedicated endpoint would be better.
+          // For now, we fetch all enrollments for the user.
+          const enrollmentsResponse = await api.get('/user/enrollments');
+          const isUserEnrolled = enrollmentsResponse.data.some(enrollment => enrollment.id_event === parseInt(id));
+          setIsEnrolled(isUserEnrolled);
+        }
+      } catch (error) {
+        toast.error('Error al cargar el evento')
+        navigate('/events')
+      } finally {
+        setLoading(false)
+      }
     }
-  }
+
+    fetchDetails()
+  }, [id, user, navigate])
 
   const handleEnroll = async () => {
     if (!user) {

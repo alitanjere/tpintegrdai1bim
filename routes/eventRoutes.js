@@ -46,6 +46,57 @@ const structureEventData = (eventRow) => {
 };
 
 router.get(
+    '/my-events',
+    protect,
+    [
+        query('limit').optional().isInt({ min: 1 }).toInt().default(15),
+        query('offset').optional().isInt({ min: 0 }).toInt().default(0),
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const { limit, offset } = req.query;
+        const userId = req.user.id;
+
+        try {
+            const eventsQuery = `
+                SELECT e.*, el.name as event_location_name, l.name as location_name, p.name as province_name
+                FROM events e
+                JOIN event_locations el ON e.id_event_location = el.id
+                JOIN locations l ON el.id_location = l.id
+                JOIN provinces p ON l.id_province = p.id
+                WHERE e.id_creator_user = $1
+                ORDER BY e.start_date DESC
+                LIMIT $2 OFFSET $3
+            `;
+            const totalQuery = `SELECT COUNT(*) FROM events WHERE id_creator_user = $1`;
+
+            const eventsResult = await db.query(eventsQuery, [userId, limit, offset]);
+            const totalResult = await db.query(totalQuery, [userId]);
+
+            const total = parseInt(totalResult.rows[0].count, 10);
+            const nextPage = (offset + limit < total) ? `/api/event/my-events?limit=${limit}&offset=${offset + limit}` : null;
+
+            res.status(200).json({
+                collection: eventsResult.rows,
+                pagination: {
+                    limit,
+                    offset,
+                    nextPage,
+                    total
+                }
+            });
+        } catch (error) {
+            console.error('Error fetching user created events:', error);
+            res.status(500).json({ message: 'Server error while fetching user created events.' });
+        }
+    }
+);
+
+router.get(
     '/',
     [
         query('limit').optional().isInt({ min: 1 }).toInt().default(15),

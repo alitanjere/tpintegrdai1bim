@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import api from '../services/api'
 import Pagination from '../components/Pagination'
 import { Calendar, MapPin, DollarSign, Users, Search, Filter } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { debounce } from 'debounce'
 
 const Events = () => {
   const [events, setEvents] = useState([])
@@ -14,7 +15,7 @@ const Events = () => {
   const [showFilters, setShowFilters] = useState(false)
   const limit = 6
 
-  const { register, handleSubmit, watch, reset } = useForm({
+  const { register, watch, reset } = useForm({
     defaultValues: {
       name: '',
       startdate: '',
@@ -24,7 +25,7 @@ const Events = () => {
 
   const watchedValues = watch()
 
-  const fetchEvents = async (page = 1, filters = {}) => {
+  const fetchEvents = useCallback(debounce(async (page = 1, filters = {}) => {
     setLoading(true)
     try {
       const params = {
@@ -49,21 +50,17 @@ const Events = () => {
     } finally {
       setLoading(false)
     }
-  }
+  }, 500), [limit])
+
 
   useEffect(() => {
     fetchEvents(currentPage, watchedValues)
-  }, [currentPage])
+  }, [currentPage, watchedValues, fetchEvents])
 
-  const onSubmit = (data) => {
-    setCurrentPage(1)
-    fetchEvents(1, data)
-  }
 
   const handleClearFilters = () => {
     reset()
     setCurrentPage(1)
-    fetchEvents(1, {})
   }
 
   const formatDate = (dateString) => {
@@ -142,9 +139,6 @@ const Events = () => {
               </div>
 
               <div className="flex space-x-4">
-                <button type="submit" className="btn-primary">
-                  Buscar
-                </button>
                 <button
                   type="button"
                   onClick={handleClearFilters}

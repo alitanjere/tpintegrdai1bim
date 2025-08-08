@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const { body, validationResult } = require('express-validator');
+const { protect } = require('../middleware/authMiddleware');
 
 const SALT_ROUNDS = 10;
 
@@ -120,5 +121,22 @@ router.post(
     }
   }
 );
+
+router.get('/enrollments', protect, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const enrollments = await db.query(
+      `SELECT e.*
+       FROM event_enrollments ee
+       JOIN events e ON ee.id_event = e.id
+       WHERE ee.id_user = $1`,
+      [userId]
+    );
+    res.status(200).json(enrollments.rows);
+  } catch (error) {
+    console.error('Error fetching user enrollments:', error);
+    res.status(500).json({ message: 'Server error while fetching enrollments.' });
+  }
+});
 
 module.exports = router;

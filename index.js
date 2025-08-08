@@ -21,8 +21,13 @@ app.use('/api/event-location', eventLocationRoutes);
 const eventRoutes = require('./routes/eventRoutes');
 app.use('/api/event', eventRoutes);
 
+const locationRoutes = require('./routes/locationRoutes');
+app.use('/api/location', locationRoutes);
+
+console.log('Starting server...');
 app.listen(port, () => {
   console.log(`Server listening at http://localhost:${port}`);
 });
+console.log('Server started.');
 
 module.exports = app;

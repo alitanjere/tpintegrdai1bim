@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
@@ -22,7 +22,6 @@ const schema = yup.object({
     .required('La ubicación es requerida'),
   start_date: yup
     .date()
-    .min(new Date(), 'La fecha debe ser futura')
     .required('La fecha de inicio es requerida'),
   duration_in_minutes: yup
     .number()
@@ -39,7 +38,8 @@ const schema = yup.object({
   enabled_for_enrollment: yup.boolean()
 })
 
-const CreateEvent = () => {
+const EditEvent = () => {
+  const { id } = useParams()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [eventLocations, setEventLocations] = useState([])
@@ -49,37 +49,44 @@ const CreateEvent = () => {
     register,
     handleSubmit,
     formState: { errors },
-    watch
+    watch,
+    reset
   } = useForm({
-    resolver: yupResolver(schema),
-    defaultValues: {
-      enabled_for_enrollment: true
-    }
+    resolver: yupResolver(schema)
   })
 
   const selectedLocationId = watch('id_event_location')
   const selectedLocation = eventLocations.find(loc => loc.id === parseInt(selectedLocationId))
 
   useEffect(() => {
-    fetchEventLocations()
-  }, [])
+    const fetchEventAndLocations = async () => {
+      setLoading(true)
+      try {
+        const eventPromise = api.get(`/event/${id}`)
+        const locationsPromise = api.get('/event-location')
+        const [eventResponse, locationsResponse] = await Promise.all([eventPromise, locationsPromise])
 
-  const fetchEventLocations = async () => {
-    try {
-      const response = await api.get('/event-location')
-      setEventLocations(response.data.collection)
-    } catch (error) {
-      toast.error('Error al cargar las ubicaciones')
-      console.error('Error fetching event locations:', error)
-    } finally {
-      setLoadingLocations(false)
+        const event = eventResponse.data
+        reset({
+          ...event,
+          start_date: new Date(event.start_date).toISOString().slice(0, 16),
+        })
+
+        setEventLocations(locationsResponse.data.collection)
+      } catch (error) {
+        toast.error('Error al cargar los datos del evento')
+        navigate('/my-events')
+      } finally {
+        setLoading(false)
+        setLoadingLocations(false)
+      }
     }
-  }
+    fetchEventAndLocations()
+  }, [id, reset, navigate])
 
   const onSubmit = async (data) => {
     setLoading(true)
     try {
-      // Format the date to ISO string
       const formattedData = {
         ...data,
         start_date: new Date(data.start_date).toISOString(),
@@ -89,11 +96,11 @@ const CreateEvent = () => {
         id_event_location: parseInt(data.id_event_location)
       }
 
-      const response = await api.post('/event', formattedData)
-      toast.success('¡Evento creado exitosamente!')
+      const response = await api.put(`/event/${id}`, formattedData)
+      toast.success('¡Evento actualizado exitosamente!')
       navigate(`/events/${response.data.id}`)
     } catch (error) {
-      const message = error.response?.data?.message || 'Error al crear el evento'
+      const message = error.response?.data?.message || 'Error al actualizar el evento'
       toast.error(message)
     } finally {
       setLoading(false)
@@ -101,6 +108,7 @@ const CreateEvent = () => {
   }
 
   const formatDateTime = (dateString) => {
+    if (!dateString) return ''
     const date = new Date(dateString)
     const year = date.getFullYear()
     const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -122,8 +130,7 @@ const CreateEvent = () => {
 
       <div className="card">
         <div className="card-header">
-          <h1 className="card-title">Crear Nuevo Evento</h1>
-          <p className="text-gray-600">Completa la información para crear tu evento</p>
+          <h1 className="card-title">Editar Evento</h1>
         </div>
 
         <div className="card-content">
@@ -131,7 +138,7 @@ const CreateEvent = () => {
             {/* Basic Information */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">Información Básica</h3>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Nombre del Evento *
@@ -169,7 +176,7 @@ const CreateEvent = () => {
             {/* Location and Date */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">Ubicación y Fecha</h3>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Ubicación del Evento *
@@ -215,7 +222,6 @@ const CreateEvent = () => {
                   <input
                     {...register('start_date')}
                     type="datetime-local"
-                    min={formatDateTime(new Date())}
                     className={`input pl-10 ${errors.start_date ? 'border-red-500' : ''}`}
                   />
                 </div>
@@ -250,7 +256,7 @@ const CreateEvent = () => {
             {/* Pricing and Capacity */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">Precio y Capacidad</h3>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Precio (ARS) *
@@ -303,7 +309,7 @@ const CreateEvent = () => {
             {/* Settings */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">Configuración</h3>
-              
+
               <div className="flex items-center">
                 <input
                   {...register('enabled_for_enrollment')}
@@ -333,7 +339,7 @@ const CreateEvent = () => {
                 disabled={loading || loadingLocations}
                 className="btn-primary flex-1 disabled:opacity-50"
               >
-                {loading ? 'Creando Evento...' : 'Crear Evento'}
+                {loading ? 'Actualizando Evento...' : 'Actualizar Evento'}
               </button>
             </div>
           </form>
@@ -343,4 +349,4 @@ const CreateEvent = () => {
   )
 }
 
-export default CreateEvent
+export default EditEvent;

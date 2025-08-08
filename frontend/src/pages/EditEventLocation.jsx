@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
@@ -36,7 +36,8 @@ const schema = yup.object({
     .transform((value, originalValue) => originalValue === '' ? null : value)
 })
 
-const CreateEventLocation = () => {
+const EditEventLocation = () => {
+  const { id } = useParams()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [locations, setLocations] = useState([])
@@ -46,29 +47,32 @@ const CreateEventLocation = () => {
     register,
     handleSubmit,
     formState: { errors },
-    watch
+    watch,
+    reset
   } = useForm({
     resolver: yupResolver(schema)
   })
 
-  const selectedLocationId = watch('id_location')
-  const selectedLocation = locations.find(loc => loc.id === parseInt(selectedLocationId))
-
   useEffect(() => {
-    const fetchLocations = async () => {
-      setLoadingLocations(true);
+    const fetchEventLocationAndLocations = async () => {
+      setLoading(true)
       try {
-        const response = await api.get('/location');
-        setLocations(response.data);
+        const eventLocationPromise = api.get(`/event-location/${id}`)
+        const locationsPromise = api.get('/location')
+        const [eventLocationResponse, locationsResponse] = await Promise.all([eventLocationPromise, locationsPromise])
+
+        reset(eventLocationResponse.data)
+        setLocations(locationsResponse.data)
       } catch (error) {
-        toast.error('Error al cargar las ubicaciones');
-        console.error('Error fetching locations:', error);
+        toast.error('Error al cargar los datos de la ubicación')
+        navigate('/event-locations')
       } finally {
-        setLoadingLocations(false);
+        setLoading(false)
+        setLoadingLocations(false)
       }
-    };
-    fetchLocations();
-  }, [])
+    }
+    fetchEventLocationAndLocations()
+  }, [id, reset, navigate])
 
   const onSubmit = async (data) => {
     setLoading(true)
@@ -81,11 +85,11 @@ const CreateEventLocation = () => {
         longitude: data.longitude || null
       }
 
-      await api.post('/event-location', formattedData)
-      toast.success('¡Ubicación creada exitosamente!')
+      await api.put(`/event-location/${id}`, formattedData)
+      toast.success('¡Ubicación actualizada exitosamente!')
       navigate('/event-locations')
     } catch (error) {
-      const message = error.response?.data?.message || 'Error al crear la ubicación'
+      const message = error.response?.data?.message || 'Error al actualizar la ubicación'
       toast.error(message)
     } finally {
       setLoading(false)
@@ -104,8 +108,7 @@ const CreateEventLocation = () => {
 
       <div className="card">
         <div className="card-header">
-          <h1 className="card-title">Crear Nueva Ubicación</h1>
-          <p className="text-gray-600">Agrega una nueva ubicación para tus eventos</p>
+          <h1 className="card-title">Editar Ubicación</h1>
         </div>
 
         <div className="card-content">
@@ -113,7 +116,7 @@ const CreateEventLocation = () => {
             {/* Basic Information */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">Información Básica</h3>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Nombre de la Ubicación *
@@ -180,7 +183,7 @@ const CreateEventLocation = () => {
             {/* Capacity */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">Capacidad</h3>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Capacidad Máxima *
@@ -210,7 +213,7 @@ const CreateEventLocation = () => {
               <p className="text-sm text-gray-600">
                 Agrega las coordenadas GPS para una mejor localización
               </p>
-              
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -260,7 +263,7 @@ const CreateEventLocation = () => {
                 disabled={loading || loadingLocations}
                 className="btn-primary flex-1 disabled:opacity-50"
               >
-                {loading ? 'Creando Ubicación...' : 'Crear Ubicación'}
+                {loading ? 'Actualizando Ubicación...' : 'Actualizar Ubicación'}
               </button>
             </div>
           </form>
@@ -270,4 +273,4 @@ const CreateEventLocation = () => {
   )
 }
 
-export default CreateEventLocation
+export default EditEventLocation
