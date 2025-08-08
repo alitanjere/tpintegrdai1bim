@@ -15,7 +15,7 @@ const handleValidationErrors = (req, res, next) => {
 const apiErrorHandler = (err, req, res, next) => {
     const statusCode = err.statusCode || 500;
     const message = err.message || 'An unexpected error occurred.';
-    console.error('API Error:', err.message);
+    console.error('API Error:', err); // Log the full error object
     res.status(statusCode).json({ success: false, message });
 };
 
